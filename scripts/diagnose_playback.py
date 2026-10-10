@@ -48,18 +48,18 @@ def url_count(value):
 
 
 def main():
+    course_ids = [value.strip() for value in
+                  os.environ.get('DIAGNOSTIC_COURSE_IDS', '').split(',') if value.strip()]
+    if not course_ids or not all(value.isdigit() for value in course_ids):
+        raise SystemExit('Configure COURSE_IDS or provide numeric course IDs')
     client = ICourseClient(login())
-    for course_id in os.environ.get('DIAGNOSTIC_COURSE_IDS', '11551,38835').split(','):
-        course_id = course_id.strip()
-        if not course_id.isdigit():
-            raise SystemExit('Course IDs must be numeric')
+    for course_id in course_ids:
         response = request(client, '/courseapi/v3/multi-search/get-course-detail', {'course_id': course_id})
         if response.get('code') != 0:
             print(json.dumps({'course_id': course_id, 'course_api_code': response.get('code')}), flush=True)
             continue
         data = response.get('data') or {}
-        items = [item for months in data.get('sub_list', {}).values()
-                 for days in months.values() for entries in days.values() for item in entries if 'id' in item]
+        items = [item for item, _ in ICourseClient._lecture_items(data.get('sub_list'))]
         print(json.dumps({'course_id': course_id, 'lecture_count': len(items),
                           'playback_status_counts': dict(Counter(str(item.get('playback_status')) for item in items))}), flush=True)
         # Sample first, middle and last lectures to limit diagnostic traffic.

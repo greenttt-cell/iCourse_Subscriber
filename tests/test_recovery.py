@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import sqlite3
 import subprocess
@@ -12,6 +13,7 @@ from unittest.mock import Mock, patch
 import main
 from scripts.merge_db import merge
 from scripts import provider_env
+from scripts import diagnose_playback
 from src.data.database import Database
 from src.data.sharder import shard_database, reassemble_database
 from src.runtime import config
@@ -158,3 +160,20 @@ class ProviderLauncherTests(unittest.TestCase):
         with patch.object(provider_env, "MODEL_PROVIDERS", [{"api_key_env": "KEY;command"}]):
             with self.assertRaises(ValueError):
                 provider_env.provider_environment({})
+
+
+class PlaybackDiagnosticTests(unittest.TestCase):
+    def test_empty_calendar_does_not_break_readonly_diagnostics(self):
+        with patch.dict(os.environ, {"DIAGNOSTIC_COURSE_IDS": "123"}), \
+                patch.object(diagnose_playback, "login"), \
+                patch.object(diagnose_playback, "request", return_value={"code": 0, "data": {"sub_list": []}}), \
+                patch("sys.stdout", new_callable=io.StringIO) as output:
+            diagnose_playback.main()
+        self.assertEqual(json.loads(output.getvalue())["lecture_count"], 0)
+
+    def test_missing_subscription_fails_before_login(self):
+        with patch.dict(os.environ, {"DIAGNOSTIC_COURSE_IDS": ""}), \
+                patch.object(diagnose_playback, "login") as login:
+            with self.assertRaises(SystemExit):
+                diagnose_playback.main()
+            login.assert_not_called()

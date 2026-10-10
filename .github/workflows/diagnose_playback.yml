@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       course_ids:
-        description: Course IDs to inspect (metadata only)
-        required: true
-        default: '11551,38835'
+        description: Course IDs to inspect (blank uses subscribed courses; metadata only)
+        required: false
+        default: ''
         type: string
 permissions:
   contents: read
@@ -23,5 +23,5 @@ jobs:
         env:
           StuId: ${{ secrets.STUID }}
           UISPsw: ${{ secrets.UISPSW }}
-          DIAGNOSTIC_COURSE_IDS: ${{ inputs.course_ids }}
+          DIAGNOSTIC_COURSE_IDS: ${{ inputs.course_ids || secrets.COURSE_IDS }}
         run: python -u -m scripts.diagnose_playback
