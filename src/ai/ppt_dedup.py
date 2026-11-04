@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import re
+import unicodedata
 from typing import Iterable
 
 import imagehash
@@ -42,6 +43,10 @@ _UI_NOISE_LINE_RES: list[re.Pattern] = [
 
 _NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
 _NORMALIZE_UI_RE = re.compile(r"[\s　]+")
+_MATH_NOTATION_RE = re.compile(r"[\\$^_|*/]|[\u0370-\u03ff\u2100-\u214f\u2070-\u209f²³¹]")
+_BARE_MATH_RE = re.compile(r"(?:[A-Za-z]{1,3}\.?|[\d\s.,:%()\[\]{}+\-–]+)")
+_LATEX_DELIMITER_RE = re.compile(r"(?<!\\)\${1,2}|\\[\[\]()]|\\(begin|end)\{([^}]+)\}")
+_LATEX_BRACE_RE = re.compile(r"(?<!\\)[{}]")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -178,23 +183,71 @@ def normalize_for_match(text: str) -> str:  # noqa: D401
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _is_math_line(text: str) -> bool:
+    """Protect plausible notation before applying text-only UI heuristics."""
+    return (
+        len(text) == 1
+        or bool(_MATH_NOTATION_RE.search(text))
+        or bool(_BARE_MATH_RE.fullmatch(text))
+        or any(unicodedata.category(char) == "Sm" for char in text)
+    )
+
+
+def _math_block_lines(lines: list[str]) -> set[int]:
+    """Retain multiline LaTeX, including text-only rows and incomplete blocks."""
+    protected: set[int] = set()
+    delimiter: str | None = None
+    environments: list[str] = []
+    brace_depth = 0
+    for index, line in enumerate(lines):
+        if delimiter or environments or brace_depth:
+            protected.add(index)
+        for match in _LATEX_DELIMITER_RE.finditer(line):
+            token = match.group()
+            protected.add(index)
+            if match.group(1) == "begin":
+                environments.append(match.group(2))
+            elif match.group(1) == "end":
+                if environments and environments[-1] == match.group(2):
+                    environments.pop()
+            elif delimiter is None and token in ("$", "$$", r"\[", r"\("):
+                delimiter = {r"\[": r"\]", r"\(": r"\)"}.get(token, token)
+            elif token == delimiter:
+                delimiter = None
+        # Commands such as \operatorname{...} may span lines without fences.
+        # Unclosed source is retained rather than guessed to be UI noise.
+        if brace_depth or "\\" in line or index in protected:
+            for match in _LATEX_BRACE_RE.finditer(line):
+                brace_depth = max(0, brace_depth + (1 if match.group() == "{" else -1))
+            if brace_depth:
+                protected.add(index)
+    return protected
+
+
 def clean_ppt_text(text: str) -> str:
     """Remove window-chrome noise from OCR'd slide text.
 
     Operates per-line so a slide mixing real content and UI labels keeps the
-    former while stripping the latter.  Returns the cleaned text (may be empty
-    for a fully-noise page).
+    former while stripping the latter. Plausible mathematical notation is kept
+    even when it resembles a toolbar label; text alone cannot disambiguate it.
+    Returns the cleaned text (may be empty for a fully-noise page).
     """
     if not text:
         return ""
+    lines = text.split("\n")
+    math_lines = _math_block_lines(lines)
     kept: list[str] = []
-    for line in text.split("\n"):
+    for index, line in enumerate(lines):
         s = line.strip()
+        if index in math_lines:
+            kept.append(line)
+            continue
         if not s:
             continue
-        # ≤2 char lines are virtually always UI chrome (ribbon icons, IME
-        # indicators, single letters from Alt-key shortcuts, etc.).
-        if len(s) <= 1:
+        # A one-character line can be a variable, digit or operator. Do not
+        # apply natural-language UI rules to mathematical notation.
+        if _is_math_line(s):
+            kept.append(s)
             continue
         # Normalise away the full-width ideographic space (U+3000) that
         # PowerPoint uses in its ribbon layout, and repeated spaces.

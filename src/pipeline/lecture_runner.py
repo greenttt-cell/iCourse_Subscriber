@@ -27,7 +27,7 @@ log greps):
      ``submit``.
   F  ``bucketer.assemble`` builds the prompt; ``Summarizer.summarize``
      calls the LLM round-robin until one succeeds.
-  G  persist ``update_summary``, ``mark_processed``, ``clear_error``.
+  G  atomically publish verified notes and complete an unchanged full source.
   H  ``audio_downloader.release`` kills ffmpeg + deletes scratch file.
 
 The runner never owns the WebVPN session check; the orchestrator
@@ -41,6 +41,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from src.ai import bucketer
+from src.ai.summarizer import SummaryResult
 from src.pipeline.ppt_pipeline import PPTPipeline
 from src.ai.transcriber import IncompleteAudioError, NoAudioStreamError
 from src.runtime import config
@@ -163,10 +164,8 @@ class LectureRunner:
             self._release_audio(sub_id)
             return None
 
-        # ── Phase G — persist + clear errors ───────────────────────────
-        if not self._db.get_lecture(sub_id).get("transcript_partial"):
-            self._db.mark_processed(sub_id)
-            self._db.clear_error(sub_id)
+        # Phase G is part of _summarize's conditional publication transaction.
+        # A later source replacement must not be marked processed here.
 
         # ── Phase H — release audio resources (ffmpeg + file) ──────────
         self._release_audio(sub_id)
@@ -364,8 +363,10 @@ class LectureRunner:
                    transcript_segments: list[dict] | None) -> Optional[str]:
         try:
             saved = self._db.get_lecture(sub_id) or {}
-            if saved.get("transcript_partial") and saved.get("summary"):
+            if saved.get("summary"):
                 return saved["summary"]
+            if saved.get("transcript") != transcript:
+                raise RuntimeError("Transcript changed before summary generation")
             kept_pages = self._db.get_done_ppt_pages(sub_id)
             prompt_text, mode = bucketer.assemble(
                 transcript, transcript_segments, kept_pages,
@@ -380,21 +381,42 @@ class LectureRunner:
                 f"{time.strftime('%H:%M:%S')}"
                 f" — mode={mode}, prompt={len(prompt_text)} chars"
             )
-            summary, model_used = self._summarizer.summarize(
+            result = self._summarizer.summarize(
                 course_title, prompt_text,
             )
+            if not isinstance(result, SummaryResult) or not result.is_complete:
+                raise ValueError("Summarizer returned an unverified or incomplete result")
+            summary, model_used = result.summary, result.model_used
             if notice:
                 summary = notice + "\n\n" + summary
+            published = self._db.save_generated_summary_if_absent(
+                sub_id, summary, model_used,
+                expected_transcript=transcript,
+                expected_partial=bool(saved.get("transcript_partial")),
+                expected_received_seconds=saved.get("audio_received_seconds"),
+                expected_expected_seconds=saved.get("audio_expected_seconds"),
+            )
+            if not published:
+                current = self._db.get_lecture(sub_id) or {}
+                if current.get("summary"):
+                    self._reporter.info("    Existing summary retained after concurrent publication.")
+                    return current["summary"]
+                raise RuntimeError("Source changed during summary generation; candidate not published")
             self._reporter.info(
                 f"    [OK] Summary by {model_used}: {len(summary)} chars"
             )
-            self._db.update_summary(sub_id, summary, model_used)
             return summary
         except Exception as e:
             self._reporter.info(
                 f"    [FAIL] Summarization error: {type(e).__name__}: {e}"
             )
-            self._db.update_error(sub_id, "summarize", str(e))
+            current = self._db.get_lecture(sub_id) or {}
+            if current.get("summary"):
+                return current["summary"]
+            if not self._db.record_summary_error_if_absent(sub_id, str(e)):
+                current = self._db.get_lecture(sub_id) or {}
+                if current.get("summary"):
+                    return current["summary"]
             raise
 
     @staticmethod

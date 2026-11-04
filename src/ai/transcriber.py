@@ -68,111 +68,53 @@ def _resource_meter(bound: str = "") -> str:
 
 
 # ── Generic per-segment text post-processing ─────────────────────────────
-# Applied to every recognized segment regardless of backend.  The cleanups
-# below address noise that the LLM otherwise has to spend tokens ignoring:
-#
-#   • SenseVoice's zh-en-ja-ko-yue model hallucinates kana / hangul tokens
-#     in pure-Chinese audio ("うん", "あの", "그래") because the model was
-#     trained to handle code-switching and biases toward emitting non-empty
-#     output even for filler sounds.
-#   • FireRed inserts ``<sil>`` between recognized chunks.
-#   • Both backends transcribe occasional bilingual filler English ("Yeah",
-#     "OK", "well") from bilingual classroom speech that adds nothing.
-#
-# What we do NOT touch: real technical English (CNN, FCN, YOLO, RGB, VGG…).
-# The English filter is a fixed whitelist of fillers, so tech terms survive
-# verbatim.  This is by design — anything subject-specific lives at the
-# prompt / LLM layer, not here.
-#
-# Module-level compiled patterns so we don't recompile per call.
-
-# Japanese hiragana + katakana + half-width katakana
-_JP_NOISE_RE = re.compile(r"[぀-ゟ゠-ヿｦ-ﾟ]+")
-# Korean: precomposed hangul syllables + jamo blocks
-_KR_NOISE_RE = re.compile(r"[가-힯ᄀ-ᇿ㄰-㆏]+")
-# English + Chinese filler / interjection words.  Word-bounded where
-# possible so tech terms ("CNN", "RNN") are never touched.
-#
-#   [\s.。,，;；!！?？]*  — leading punctuation / whitespace (greedy)
-#   \b(…)\b                 — filler word (word-bounded for ASCII)
-#   [\s.。,，;；!！?？、。]+ — trailing punctuation sequence (at least 1)
-#
-# All three are removed together so we don't leave orphan punctuation
-# behind.  For Chinese fillers that can't be word-bounded, we require
-# at least ONE punctuation neighbour.
-#
-# CJK interjections — ONLY pure onomatopoeia / filler sounds, NOT sentence
-# particles ("吗""呢""吧""嘛""呀" are meaningful and must stay).
-_CN_FILLER_WORDS = r"嗯|呃|啊+|哦+|哈+|呵+|唉|哎|哟|嗨|喔+|噢+|啧|嘶|啧|唔+"
-_EN_FILLER_WORDS = (
-    r"yeah|yep|yup|ok|okay|uh+|um+|hmm+|ohh*|huh+|hey+|"
-    r"you know|i mean|"
-    r"the|it|its|that|this|these|those|"
-    r"of|to|for|a|an|be|was|were|do|does|did|"
-    r"just|only|very|really|actually"
-)
-# Pattern: filler word surrounded by punctuation on either side.
-# Requires AT LEAST ONE punctuation neighbour (leading or trailing) so
-# we don't touch fillers embedded in real content.  The entire match
-# (optional leading punct + filler + mandatory trailing punct) is
-# removed, so no orphan punctuation remains.
-_FILLER_PUNCT_RE = re.compile(
-    r"(?:"
-    r"[\s.。,，;；!！?？、。]+"
-    r"\b(?:" + _EN_FILLER_WORDS + r")\b"
-    r"[\s.。,，;；!！?？、。]*"
-    r"|"
-    r"[\s.。,，;；!！?？、。]*"
-    r"\b(?:" + _EN_FILLER_WORDS + r")\b"
-    r"[\s.。,，;；!！?？、。]+"
-    r")",
+# Preserve mathematical source text rather than guessing which symbols or
+# foreign words are noise.  Only known backend tags are always removed;
+# hesitation cleanup is limited to isolated clauses in ordinary prose.
+_ASR_TAG_RE = re.compile(
+    r"<sil>|<\|(?:zh|en|yue|ja|ko|nospeech|lang|EMO|EMO_UNKNOWN|"
+    r"NEUTRAL|HAPPY|SAD|ANGRY|FEARFUL|DISGUSTED|SURPRISED|"
+    r"Speech|Speech_Noise|BGM|Applause|Laughter|Cry|Sneeze|Breath|"
+    r"Cough|Sing|Event_UNK|withitn|woitn)\|>",
     re.IGNORECASE,
 )
-_CN_FILLER_PUNCT_RE = re.compile(
-    r"(?:"
-    r"[\s.。,，;；!！?？、。]+"
-    r"(?:" + _CN_FILLER_WORDS + r")"
-    r"[\s.。,，;；!！?？、。]*"
-    r"|"
-    r"[\s.。,，;；!！?？、。]*"
-    r"(?:" + _CN_FILLER_WORDS + r")"
-    r"[\s.。,，;；!！?？、。]+"
-    r")",
+
+# A conservative guard: LaTeX, operators, brackets, or an isolated ASCII
+# letter may carry mathematical meaning.  Preserve the entire segment's
+# punctuation and spacing in that case, including mixed Chinese/English.
+_MATH_CONTEXT_RE = re.compile(
+    r"[\\$=<>≤≥≠≈±×÷∑∫√∞^_{}\[\]()+*/′″]|"
+    r"(?<![A-Za-z])[A-Za-z](?![A-Za-z])"
 )
-# Angle-bracket tokens emitted as literal text by some backends:
-#   <sil>          FireRed silence
-#   <|zh|>, <|EMO|>, <|HAPPY|>, <|Speech|> …  SenseVoice format tags
-#                  (sherpa-onnx usually strips these, but defense in depth)
-_BRACKET_TOK_RE = re.compile(r"<\|?[^<>]*\|?>")
-# Collapse the leftover whitespace (incl. ideographic full-width space U+3000)
-_WS_COLLAPSE_RE = re.compile(r"[ \t　]+")
-# After deletions, runs of dangling punctuation + whitespace pile up (e.g.
-# "P. Yeah. Yeah。" → "P. . 。" — the periods are orphans left by the
-# removed fillers).  Collapse 2+ adjacent punctuation/space chars to a
-# single full-width period so the LLM still sees ONE sentence break.
-_ORPHAN_PUNCT_RE = re.compile(r"[\s.。,，;；!！?？]{2,}")
-# Trim leading/trailing punctuation+whitespace on each segment — the inter-
-# segment join in ``_consume_pcm_stream`` already inserts a space, so any
-# punctuation at the edges is noise from a deletion at the boundary.
-_EDGE_PUNCT = " \t　.。,，;；!！?？"
+
+# No articles, logical qualifiers (only), or ordinary English verbs here.
+# Japanese/Korean content is retained except these known isolated fillers.
+_FILLER_WORDS = (
+    r"yeah|yep|yup|ok|okay|uh+|um+|hmm+|ohh*|huh+|hey+|"
+    r"嗯|呃|啊+|哦+|哈+|呵+|唉|哎|哟|嗨|喔+|噢+|啧|嘶|唔+|"
+    r"うん|あの|그래"
+)
+# Whitespace alone is not a clause boundary.  Keep the preceding delimiter
+# so removing an interjection never joins two content clauses together.
+_FILLER_CLAUSE_RE = re.compile(
+    r"(^|[.。,，;；!！?？、])[ \t　]*(?:" + _FILLER_WORDS + r")"
+    r"[ \t　]*(?:[.。,，;；!！?？、]|$)",
+    re.IGNORECASE,
+)
 
 
 def _postprocess_segment(text: str) -> str:
-    """Strip cross-backend ASR noise from one recognized segment."""
-    text = _BRACKET_TOK_RE.sub("", text)
-    # Japanese / Korean kana — always noise in Chinese lectures
-    text = _JP_NOISE_RE.sub("", text)
-    text = _KR_NOISE_RE.sub("", text)
-    # Filler words with punctuation neighbours — remove word + punct together
-    text = _FILLER_PUNCT_RE.sub("", text)
-    text = _CN_FILLER_PUNCT_RE.sub("", text)
-    # Clean up what's left
-    text = _ORPHAN_PUNCT_RE.sub("。", text)
-    text = _WS_COLLAPSE_RE.sub(" ", text)
-    text = text.strip(_EDGE_PUNCT).strip()
-    if text in (".", "。", "？", "。", "!", "；", "，"):
-        return ""
-    return text
+    """Remove known ASR tags and isolated fillers; retain mathematical text."""
+    text = _ASR_TAG_RE.sub("", text).strip()
+    if _MATH_CONTEXT_RE.search(text):
+        return text
+    # Repeating handles adjacent filler clauses sharing a delimiter.  Every
+    # replacement shortens the string; no general punctuation rewrite runs.
+    while True:
+        cleaned = _FILLER_CLAUSE_RE.sub(lambda m: m.group(1), text).strip()
+        if cleaned == text:
+            return text
+        text = cleaned
 
 
 class Transcriber:
