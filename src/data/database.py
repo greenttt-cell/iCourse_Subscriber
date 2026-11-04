@@ -298,6 +298,18 @@ class Database:
                 (sub_id,),
             )
 
+    def record_summary_error_if_absent(self, sub_id: str, error_msg: str) -> bool:
+        """Record a failed generation only while no formal notes exist."""
+        with self._lock, self.conn:
+            cursor = self.conn.execute(
+                """UPDATE lectures SET error_stage = 'summarize', error_msg = ?,
+                       error_count = COALESCE(error_count, 0) + 1,
+                       last_error_at = ?
+                   WHERE sub_id = ? AND COALESCE(summary, '') = ''""",
+                (error_msg, datetime.now().isoformat(), sub_id),
+            )
+            return cursor.rowcount == 1
+
     def update_ppt_page(self, sub_id: str, page_num: int,
                         text: str | None, status: str):
         """Mark a page's OCR result.
@@ -422,6 +434,44 @@ class Database:
                    WHERE sub_id = ?""",
                 (summary, model, sub_id),
             )
+
+    def save_generated_summary_if_absent(
+            self, sub_id: str, summary: str, model: str, *,
+            expected_transcript: str | None, expected_partial: bool,
+            expected_received_seconds: float | None = None,
+            expected_expected_seconds: float | None = None) -> bool:
+        """Publish once for an unchanged source, preserving existing notes.
+
+        The conditional update also completes a full-source lecture. Keeping
+        these writes together prevents a concurrent transcript replacement
+        from being marked processed by the older generation attempt. Partial
+        audio retains its retry and error state, and delivery state is untouched.
+        """
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError("Generated summary must contain text")
+        with self._lock, self.conn:
+            cursor = self.conn.execute(
+                """UPDATE lectures SET summary = ?, summary_model = ?,
+                       processed_at = CASE WHEN COALESCE(transcript_partial, 0) = 0
+                           THEN ? ELSE processed_at END,
+                       error_stage = CASE WHEN COALESCE(transcript_partial, 0) = 0
+                           THEN NULL ELSE error_stage END,
+                       error_msg = CASE WHEN COALESCE(transcript_partial, 0) = 0
+                           THEN NULL ELSE error_msg END,
+                       error_count = CASE WHEN COALESCE(transcript_partial, 0) = 0
+                           THEN 0 ELSE error_count END,
+                       last_error_at = CASE WHEN COALESCE(transcript_partial, 0) = 0
+                           THEN NULL ELSE last_error_at END
+                   WHERE sub_id = ? AND COALESCE(summary, '') = ''
+                     AND transcript IS ?
+                     AND COALESCE(transcript_partial, 0) = ?
+                     AND audio_received_seconds IS ?
+                     AND audio_expected_seconds IS ?""",
+                (summary, model, datetime.now().isoformat(), sub_id,
+                 expected_transcript, int(expected_partial),
+                 expected_received_seconds, expected_expected_seconds),
+            )
+            return cursor.rowcount == 1
 
     def get_lecture(self, sub_id: str) -> dict | None:
         """Get a single lecture row by sub_id."""

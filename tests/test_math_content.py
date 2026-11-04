@@ -2,11 +2,12 @@
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from src.ai.ppt_dedup import clean_ppt_text
 from src.ai.summarizer import SYSTEM_PROMPT, Summarizer
 from src.ai.transcriber import _postprocess_segment
+from src.runtime import config
 
 
 class TranscriptMathTests(unittest.TestCase):
@@ -110,16 +111,22 @@ class MathPromptTests(unittest.TestCase):
         summarizer = Summarizer.__new__(Summarizer)
         client = Mock()
         client.chat.completions.create.return_value = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="本地模拟讲义"))],
+            choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content="本地模拟讲义"))],
             usage=None,
         )
         instruction = None
         for content in ("取 A 为矩阵", "取 A 为矩阵\n" * 1000):
             with self.subTest(input_chars=len(content)):
-                self.assertEqual(
-                    summarizer._call_llm(client, "mock-model", "数学课", content),
-                    "本地模拟讲义",
-                )
+                with patch.object(config, "MODEL_RESPONSE_CONTRACTS", {
+                    ("test", "mock-model"): {"status": "verified", "adapter": "openai_chat_completions",
+                                              "base_url": "https://example.invalid", "source": "local fixture"}
+                }):
+                    result = summarizer._call_llm(
+                        client, "mock-model", "数学课", content,
+                        provider_name="test", base_url="https://example.invalid",
+                    )
+                self.assertTrue(result.is_complete)
+                self.assertEqual(result.summary, "本地模拟讲义")
                 request = client.chat.completions.create.call_args.kwargs
                 self.assertEqual(set(request), {"model", "messages", "timeout"})
                 self.assertEqual(request["messages"][0]["content"], SYSTEM_PROMPT)

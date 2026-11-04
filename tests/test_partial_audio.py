@@ -7,6 +7,7 @@ import numpy as np
 import main
 
 from scripts.merge_db import merge
+from src.ai.summarizer import SummaryResult
 from src.ai.transcriber import Transcriber, IncompleteAudioError
 from src.api.icourse import ICourseClient
 from src.data.database import Database
@@ -69,7 +70,8 @@ class PartialAudioTests(unittest.TestCase):
         transcriber.transcribe_tail.side_effect = IncompleteAudioError(
             "truncated", 100, 300, "Recognized speech", [{"start_ms": 0, "end_ms": 1000, "text": "Recognized speech"}])
         runner = self.runner(transcriber)
-        runner._summarizer.summarize.return_value = ("Notes", "model")
+        runner._summarizer.summarize.return_value = SummaryResult(
+            "Notes", "model", "complete", "stop", "verified")
         text, segments = runner._get_transcript(None, "course", "lecture")
         self.assertIn("Recognized speech", text)
         self.assertTrue(self.db.get_lecture("lecture")["transcript_partial"])
@@ -91,7 +93,8 @@ class PartialAudioTests(unittest.TestCase):
         transcriber.transcribe_tail.side_effect = IncompleteAudioError("truncated", 100, 300, "Available speech")
         runner = self.runner(transcriber)
         runner._ppt = Mock()
-        runner._summarizer.summarize.return_value = ("Partial notes", "model")
+        runner._summarizer.summarize.return_value = SummaryResult(
+            "Partial notes", "model", "complete", "stop", "verified")
         runner.run("course", "Course", lecture)
         row = self.db.get_lecture("lecture")
         self.assertIsNone(row["processed_at"])
@@ -105,7 +108,8 @@ class PartialAudioTests(unittest.TestCase):
         transcriber.transcribe_tail.return_value = ("Complete speech", [])
         runner = self.runner(transcriber)
         runner._ppt = Mock()
-        runner._summarizer.summarize.return_value = ("Full notes", "model")
+        runner._summarizer.summarize.return_value = SummaryResult(
+            "Full notes", "model", "complete", "stop", "verified")
         runner.run("course", "Course", lecture)
         self.assertIsNotNone(self.db.get_lecture("lecture")["processed_at"])
         self.assertIsNone(self.db.get_lecture("lecture")["error_stage"])

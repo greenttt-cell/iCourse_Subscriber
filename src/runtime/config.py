@@ -69,10 +69,74 @@ MODEL_PROVIDERS: list[dict] = [
 ]
 
 
+# An API key alone does not authorize another provider or a paid fallback.
+# This list filters MODEL_PROVIDERS without changing its declared order.
+MODEL_PROVIDER_ALLOWLIST = tuple(
+    name.strip()
+    for name in os.environ.get("LLM_ALLOWED_PROVIDERS", "modelscope").split(",")
+    if name.strip()
+)
+
+# Response contracts are specific to both the provider/model and endpoint.
+# OpenAI SDK compatibility alone does not verify a provider's stop semantics.
+MODEL_RESPONSE_CONTRACTS: dict[tuple[str, str], dict] = {
+    ("modelscope", "deepseek-ai/DeepSeek-V4-Pro"): {
+        "status": "needs_verification", "adapter": "openai_chat_completions",
+        "base_url": "https://api-inference.modelscope.cn/v1/",
+    },
+    ("modelscope", "Qwen/Qwen3.5-397B-A17B"): {
+        "status": "partially_verified", "adapter": "openai_chat_completions",
+        "base_url": "https://api-inference.modelscope.cn/v1/",
+        # Phase 2.1 probe 1: HTTP 200, message.content="OK", finish_reason="stop".
+        # This verifies this normal ending only, not every hosted API behavior.
+        "normal_finish_reasons": ("stop",),
+        "normal_finish_reason_status": "observed",
+        # Keep rejecting length defensively; it has not been observed here.
+        "truncation_finish_reason_status": "needs_verification",
+    },
+    ("deepseek", "deepseek-v4-flash"): {
+        "status": "verified", "adapter": "openai_chat_completions",
+        "base_url": "https://api.deepseek.com/v1",
+        "source": "https://api-docs.deepseek.com/api/create-chat-completion/",
+    },
+    ("gemini", "gemini-2.5-flash"): {
+        "status": "needs_verification", "adapter": "openai_chat_completions",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    },
+    ("gemini", "gemini-3-flash-preview"): {
+        "status": "needs_verification", "adapter": "openai_chat_completions",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    },
+}
+
+# No production output budget is enabled before provider validation.  A
+# documented parameter name does not establish a hosted model's token cap.
+MODEL_OUTPUT_BUDGETS: dict[tuple[str, str], dict] = {
+    ("modelscope", "deepseek-ai/DeepSeek-V4-Pro"): {
+        "parameter": None, "parameter_status": "needs_verification", "value": None,
+    },
+    ("modelscope", "Qwen/Qwen3.5-397B-A17B"): {
+        # Probe 2 had no HTTP response after 90.121s. Neither support nor
+        # rejection of max_tokens=32 was established; send no budget parameter.
+        "parameter": None, "parameter_status": "needs_verification", "value": None,
+    },
+    ("deepseek", "deepseek-v4-flash"): {
+        "parameter": "max_tokens", "parameter_status": "verified", "value": None,
+        "base_url": "https://api.deepseek.com/v1",
+    },
+    ("gemini", "gemini-2.5-flash"): {
+        "parameter": None, "parameter_status": "needs_verification", "value": None,
+    },
+    ("gemini", "gemini-3-flash-preview"): {
+        "parameter": None, "parameter_status": "needs_verification", "value": None,
+    },
+}
+
+
 def resolve_model_providers() -> list[dict]:
     """Resolve MODEL_PROVIDERS into runtime configs.
 
-    Drops providers whose api_key env var is unset. Same-name entries get
+    Filters the explicit allowlist and drops unset API keys. Same-name entries get
     their model lists merged into the first occurrence (Summarizer's client
     dict keys on name and would otherwise collide).
 
@@ -82,6 +146,8 @@ def resolve_model_providers() -> list[dict]:
     resolved: list[dict] = []
     by_name: dict[str, dict] = {}
     for p in MODEL_PROVIDERS:
+        if p["name"] not in MODEL_PROVIDER_ALLOWLIST:
+            continue
         api_key = os.environ.get(p["api_key_env"], "").strip()
         if not api_key:
             continue

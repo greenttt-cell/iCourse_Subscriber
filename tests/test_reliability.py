@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psutil
 
 import main
-from src.ai.summarizer import Summarizer
+from src.ai.summarizer import Summarizer, SummaryGenerationError
 from src.ai.transcriber import Transcriber
 from src.api.icourse import ICourseClient
 from src.data.database import Database
@@ -94,6 +94,12 @@ class SummaryTests(unittest.TestCase):
     def make_summarizer(self):
         providers = [{"name": "test", "api_key": "test-key",
                       "base_url": "https://example.invalid", "models": ["first", "backup"]}]
+        self.enterContext(patch.object(config, "MODEL_PROVIDER_ALLOWLIST", ("test",)))
+        self.enterContext(patch.object(config, "MODEL_RESPONSE_CONTRACTS", {
+            ("test", model): {"status": "verified", "adapter": "openai_chat_completions",
+                              "base_url": "https://example.invalid", "source": "local fixture"}
+            for model in ("first", "backup")
+        }))
         with patch.object(config, "resolve_model_providers", return_value=providers), \
                 patch("src.ai.summarizer.OpenAI") as factory:
             summarizer = Summarizer()
@@ -109,19 +115,21 @@ class SummaryTests(unittest.TestCase):
             with self.subTest(result=result):
                 summarizer, call = self.make_summarizer()
                 call.side_effect = [result, SimpleNamespace(
-                    choices=[SimpleNamespace(message=SimpleNamespace(content=" valid summary "))], usage=None)]
-                self.assertEqual(summarizer.summarize("title", "text"), ("valid summary", "test/backup"))
+                    choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=" valid summary "))], usage=None)]
+                result = summarizer.summarize("title", "text")
+                self.assertTrue(result.is_complete)
+                self.assertEqual((result.summary, result.model_used), ("valid summary", "test/backup"))
 
     def test_provider_error_uses_backup(self):
         summarizer, call = self.make_summarizer()
         call.side_effect = [RuntimeError("no provider supported"), SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="summary"))], usage=None)]
-        self.assertEqual(summarizer.summarize("title", "text")[1], "test/backup")
+            choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content="summary"))], usage=None)]
+        self.assertEqual(summarizer.summarize("title", "text").model_used, "test/backup")
 
     def test_all_models_fail(self):
         summarizer, call = self.make_summarizer()
         call.side_effect = RuntimeError("provider unavailable")
-        with self.assertRaisesRegex(RuntimeError, "All LLM models failed"):
+        with self.assertRaises(SummaryGenerationError):
             summarizer.summarize("title", "text")
 
 
@@ -194,9 +202,10 @@ class WorkerTests(unittest.TestCase):
                         "HTTP_PROXY": "", "HTTPS_PROXY": "", "ALL_PROXY": "",
                         "http_proxy": "", "https_proxy": "", "all_proxy": "",
                         "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"}):
-                    self.assertEqual(run_with_timeout(main._process_lecture,
+                    self.assertEqual(run_with_timeout(worker_fixtures.process_with_local_contract,
                         (worker_fixtures.EmptyPPTVPN(), path, "course", "Test course",
-                         {"sub_id": "lecture", "sub_title": "Test lecture"}), 60), 0)
+                         {"sub_id": "lecture", "sub_title": "Test lecture"},
+                         f"http://127.0.0.1:{server.server_port}/v1"), 60), 0)
                 db = Database(path)
                 row = db.get_lecture("lecture")
                 self.assertEqual(row["summary"], "Test course summary")
