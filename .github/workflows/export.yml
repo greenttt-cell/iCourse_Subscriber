@@ -1,6 +1,11 @@
 name: Export Course Summaries
 
 on:
+  #workflow_dispatch:
+  workflow_run:
+    workflows: ["iCourse Check"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       course_id:
@@ -24,8 +29,12 @@ on:
 permissions:
   contents: read
 
+#jobs:
+  #export:
+    #runs-on: ubuntu-latest
 jobs:
   export:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -49,7 +58,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install PDF dependencies
-        if: inputs.export_type == 'PDF'
+        #if: inputs.export_type == 'PDF'
+        if: ${{ github.event_name == 'workflow_run' || inputs.export_type == 'PDF' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y fonts-noto-cjk libpango-1.0-0 libcairo2
@@ -126,10 +136,14 @@ jobs:
           SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
-          EXPORT_COURSE_ID: ${{ inputs.course_id }}
+          #EXPORT_COURSE_ID: ${{ inputs.course_id }}
+          #EXPORT_SUB_IDS: ${{ inputs.sub_ids }}
+          EXPORT_COURSE_ID: ${{ github.event_name == 'workflow_run' && secrets.COURSE_IDS || inputs.course_id }}
           EXPORT_SUB_IDS: ${{ inputs.sub_ids }}
+          EXPORT_TYPE: ${{ github.event_name == 'workflow_run' && 'PDF' || inputs.export_type }}
         run: |
-          case "${{ inputs.export_type }}" in
+          
+          case "$EXPORT_TYPE" in
             "HTML")
               EXPORT_FLAG=""
               ;;
