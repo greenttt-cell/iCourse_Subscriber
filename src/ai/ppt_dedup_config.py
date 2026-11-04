@@ -144,6 +144,9 @@ INVALID_PAGE_PATTERNS: list[str] = [
 # Strategy: only match when the ENTIRE line IS the label.  Substring matching
 # would risk removing real content — e.g. "幻灯片" is a stopword, but
 # "幻灯片设计原则" passes through.
+# Ambiguous content labels (公式、符号、排列、选择、比较、问题、输出、转换)
+# and single-character/variable labels must stay out of this set. Without
+# image layout, a toolbar label cannot safely be distinguished from notation.
 PPT_UI_STOPWORDS: set[str] = {
     # ── Ribbon tabs ──
     "文件", "开始", "插入", "设计", "切换", "动画",
@@ -151,12 +154,12 @@ PPT_UI_STOPWORDS: set[str] = {
     # ── Home tab clusters ──
     "粘贴", "剪切", "复制", "格式刷", "新建", "重置",
     "剪贴板", "字体", "段落", "快速样式", "样式",
-    "绘图", "编辑", "排列", "形状填充", "形状轮廓",
-    "形状效果", "选择", "查找", "替换", "a替换",
+    "绘图", "编辑", "形状填充", "形状轮廓",
+    "形状效果", "查找", "替换", "a替换",
     "ac替换", "目复制", "突出显示", "擦除",
     # ── Insert / Design / Transitions tabs ──
     "表格", "图片", "形状", "图标", "SmartArt", "图表",
-    "文本框", "页眉和页脚", "艺术字", "公式", "符号",
+    "文本框", "页眉和页脚", "艺术字",
     "视频", "音频", "屏幕录制",
     "主题", "变体", "格式", "背景格式",
     "切换到此幻灯片",
@@ -166,7 +169,7 @@ PPT_UI_STOPWORDS: set[str] = {
     "设置幻灯片放映", "隐藏幻灯片",
     # ── Review / View tabs ──
     "拼写和语法", "同义词库", "字数统计", "批注",
-    "显示批注", "比较", "接受", "拒绝",
+    "显示批注", "接受", "拒绝",
     "页面视图", "阅读视图", "大纲视图",
     "备注", "备注页", "显示比例", "适应窗口",
     "标尺", "网格线", "参考线",
@@ -181,19 +184,8 @@ PPT_UI_STOPWORDS: set[str] = {
     "绘制", "编辑形状", "文本填充", "文本轮廓",
     "文本效果", "转换为SmartArt", "选择窗格",
     "上移一层", "下移一层",
-    # ── Single-char icon labels (appear 15-100+ pages each) ──
-    # These are icon-only PowerPoint buttons that OCR reads as a
-    # single character.  The list is restricted to characters that
-    # appeared on >=10 distinct pages across our 7-lecture sample
-    # AND are consistent with ribbon/gallery icons.
-    # Note: with the <=2-char catch-all in clean_ppt_text, this
-    # section is only a documentation / override layer.
-    "口", "品", "日", "昆", "国", "田", "单", "回",
-    "器", "三",
-    # Keyboard-shortcut hint letters (Alt-key ribbon navigation).
-    # Each appears on 8-40+ distinct pages, evenly across courses.
-    "A", "B", "C", "D", "H", "I", "K", "M", "P", "Q", "S",
-    "X", "a", "b", "k", "w", "x",
+    # Single-character OCR/icon labels and keyboard hints are retained:
+    # they can also be mathematical variables, digits or symbols.
     # ── Font/typeface labels in the ribbon ──
     "楷体", "五号", "五号AA", "A字", "Aa",
     # ── Common OCR garbage from UI chrome ──
@@ -214,7 +206,7 @@ PPT_UI_STOPWORDS: set[str] = {
     "大纲", "时间线", "源", "导航", "运行",
     "rundebug", "RunDebug",
     "Bloop", "Usage", "CUE", "CuePro",
-    "问题", "输出", "筛选器", "任务", "终端", "控制台",
+    "筛选器", "任务", "终端", "控制台",
     "暂无编辑建议",
     "暂无编辑建议请先进行编码操作",
     "试试8U与AI聊天8I与AI一起编写代码",
@@ -229,8 +221,7 @@ PPT_UI_STOPWORDS: set[str] = {
     # ── Browser download-manager chrome ──
     "全部清除", "搜索下载记录", "下载记录",
     # ── Input method / language-bar indicators ──
-    "认", "证", "门", "退",
-    "EM", "PN",
+    # Short letter labels such as EM/PN can be mathematical notation.
     # ── WeChat / IM input placeholders ──
     "说点什么",
     # ── IDE panels and tool names ──
@@ -244,7 +235,6 @@ PPT_UI_STOPWORDS: set[str] = {
     "查找文本或工具Q",                       # SmallPDF search bar
     "电子签名",                              # SmallPDF e-signature
     # ── Acrobat / PDF reader toolbar buttons ──
-    "转换",                                 # Convert
     "签名",                                 # Sign
     "压缩PDF",                              # Compress PDF
     "保护PDF",                              # Protect PDF
@@ -263,9 +253,7 @@ PPT_UI_STOPWORDS: set[str] = {
     # ── Browser/PDF menu bar (full line) ──
     "文件（F）编辑（E）视图（V）签名（S）窗口（W）帮助（H）",
     # ── Keyboard shortcut / UI artifacts from PDF readers ──
-    "AL", "LO", "[AL",
-    # ── PowerPoint slide-sorter status ──
-    "回", "□",
+    # AL/LO and checkbox-like symbols are ambiguous; preserve them.
     # ── PowerPoint thumbnail sidebar ├──
     "大纲视图",
     # ── PowerPoint inking / drawing context toolbars ──
@@ -307,32 +295,21 @@ PPT_UI_STOPWORDS: set[str] = {
 }
 
 # ── Per-line regex patterns (clean_ppt_text fullmatch) ──────────────────────
-# For lines whose exact text varies (numbers, timestamps, counts) but which
-# are clearly UI chrome.  Each is a raw regex string; ppt_dedup compiles them
+# For lines whose exact text varies but which are clearly UI chrome.
+# Bare numbers, fractions, percentages, initials and formula-like OCR are
+# deliberately retained. Each is a raw regex string; ppt_dedup compiles them
 # on import and applies re.fullmatch against the normalised line.
 UI_NOISE_LINE_PATTERNS: list[str] = [
     # Page/slide counters: "第2页，共5页", "幻灯片第22张，共33张"
     r"^(?:幻灯片\s*)?第\d+[页张][，,]?\s*共\d+[页张]$",
-    # Zoom level: "62%", "200%"
-    r"^\d{1,3}%$",
     # Word count: "3401个字"
     r"^\d{1,6}个字$",
-    # URI fragment: "/19"
-    r"^/\d{1,3}$",
-    # Isolated date: "2026-03-24"
-    r"^\d{4}-\d{2}-\d{2}$",
-    # Timestamp: "10:02" or "10:02:17"
-    r"^\d{1,2}:\d{2}(:\d{2})?$",
     # English date: "May29,2025"
     r"^[A-Z][a-z]+\d{1,2},\s*\d{4}$",
     # Truncated Word/PDF labels
     r"^First Pa\.\.$",
     r"^AbstractJAbs?tra\.+$",
     r"^AuthorJCompact$",
-    # Formula OCR noise: "Uabexx²²²..."
-    r"^Uabexx²+$",
-    # Single initial with dot: "A."
-    r"^[A-Z]\.$",
     # University name: "FudanUniversity)"
     r"^[A-Z][a-z]+University\)?$",
     # Truncated window titles (star + text): "☆..."
@@ -345,8 +322,6 @@ UI_NOISE_LINE_PATTERNS: list[str] = [
     r"^单击此处添加(?:备注|标题|副标题|正文)$",
     # Standalone PPT placeholder labels (appear in thumbnail sidebar / master view)
     r"^(?:标题[1-5]|副标题|正文|[1-5]级标题)$",
-    # PowerPoint thumbnail sidebar: slide number alone
-    r"^\d+/\d+$",
     # IDE / dev-tool indicators
     r"^demo[（(]\d+[）)]$",                          # "demo(3)" or "demo（3）"
     r"^行\d+[，,]\s*列\d+",                          # "行6,列27" cursor position
@@ -355,9 +330,8 @@ UI_NOISE_LINE_PATTERNS: list[str] = [
     r"^run\s*[|│]\s*debug$",                          # "run|debug" IDE button
     r"^Compiled [a-zA-Z]+\(",                          # "Compiled demo(" IDE compile status
     r"^Activating [a-z ]+",                            # "Activating task providers java"
-    # IDE problems / changes panel
+    # IDE changes panel. Bare "问题70" could be a numbered exercise.
     r"^已处理\d+/\d+个变更点",                         # "已处理0/0个变更点"
-    r"^问题\d+",                                       # "问题70" - IDE Problems counter
     # IDE placeholder split across OCR lines
     r"^暂无编辑建议[，,].*",                            # partially visible IDE placeholder
     r"^码操作\.\.\.$",                                 # continuation: "...码操作..."
