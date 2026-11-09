@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+# Runtime assets must be outside the repository; these are extra safeguards.
+runs/
+*.avi
+*.mp4
+*.mkv
+*.png

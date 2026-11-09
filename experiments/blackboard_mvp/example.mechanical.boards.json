@@ -1,0 +1,94 @@
+{
+  "sample_interval_ms": 1000,
+  "geometry_source": "synthetic_example_only_not_real_video",
+  "assemblies": [
+    {
+      "assembly_id": "left_assembly",
+      "viewport": [
+        20,
+        35,
+        340,
+        400
+      ],
+      "search_region": [
+        20,
+        35,
+        340,
+        400
+      ],
+      "physical_aperture": null
+    },
+    {
+      "assembly_id": "right_assembly",
+      "viewport": [
+        420,
+        35,
+        340,
+        400
+      ],
+      "search_region": [
+        420,
+        35,
+        340,
+        400
+      ],
+      "physical_aperture": null
+    }
+  ],
+  "boards": [
+    {
+      "board_id": "right_inner",
+      "label": "右内板",
+      "assembly_id": "right_assembly",
+      "layer": "inner",
+      "roi": [
+        440,
+        240,
+        300,
+        180
+      ]
+    },
+    {
+      "board_id": "right_outer",
+      "label": "右外板",
+      "assembly_id": "right_assembly",
+      "layer": "outer",
+      "roi": [
+        440,
+        50,
+        300,
+        180
+      ]
+    },
+    {
+      "board_id": "left_inner",
+      "label": "左内板",
+      "assembly_id": "left_assembly",
+      "layer": "inner",
+      "roi": [
+        40,
+        240,
+        300,
+        180
+      ]
+    },
+    {
+      "board_id": "left_outer",
+      "label": "左外板",
+      "assembly_id": "left_assembly",
+      "layer": "outer",
+      "roi": [
+        40,
+        50,
+        300,
+        180
+      ]
+    }
+  ],
+  "position_keyframes": [],
+  "tracking_mode": "automatic_tracking",
+  "camera": {
+    "anchor_regions": null,
+    "recovery_observations": 3
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "sample_interval_ms": 1000,
+  "max_duration_ms": 600000,
+  "reconfirm_at_ms": [],
+  "boards": [
+    {"board_id": "board_d", "label": "右下", "roi": [336, 224, 288, 156]},
+    {"board_id": "board_a", "label": "左上", "roi": [16, 32, 288, 156]},
+    {"board_id": "board_c", "label": "左下", "roi": [16, 224, 288, 156]},
+    {"board_id": "board_b", "label": "右上", "roi": [336, 32, 288, 156]}
+  ],
+  "detector": {
+    "pixel_threshold": 25,
+    "min_changed_pixels": 8,
+    "min_component_pixels": 2,
+    "registration_threshold": 0.25,
+    "run_gap_ms": 5000,
+    "motion_shift_pixels": 3.0,
+    "interference_ratio": 0.2
+  }
+}
